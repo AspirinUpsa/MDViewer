@@ -214,7 +214,7 @@ void HelpDialog::loadFile(const QString &filePath)
 
     // Настраиваем базовый шрифт
     QFont font = m_textBrowser->font();
-    font.setPointSize(11);
+    font.setPointSize(9);
     m_textBrowser->setFont(font);
 
     // Применяем текущий режим
@@ -471,7 +471,7 @@ void HelpDialog::zoomNormal()
 {
     m_currentZoom = 1.0;
     QFont font = m_textBrowser->font();
-    font.setPointSize(11);
+    font.setPointSize(9);
     m_textBrowser->setFont(font);
 }
 
