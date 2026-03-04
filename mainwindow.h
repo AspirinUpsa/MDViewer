@@ -1,10 +1,37 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPushButton>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 
 class HelpDialog;
 class QLabel;
-class QPushButton;
+
+/**
+ * @brief Кнопка, пропускающая drag-and-drop события к родительскому виджету
+ */
+class DropButton : public QPushButton
+{
+    Q_OBJECT
+
+public:
+    explicit DropButton(const QString &text, QWidget *parent = nullptr)
+        : QPushButton(text, parent) {}
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        // Передаём событие родительскому виджету
+        QPushButton::dragEnterEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        // Передаём событие родительскому виджету
+        QPushButton::dropEvent(event);
+    }
+};
 
 class MainWindow : public QMainWindow
 {
@@ -35,5 +62,5 @@ private:
     HelpDialog *m_helpDialog;
     QWidget *m_centralWidget;
     QLabel *m_dropLabel;
-    QPushButton *m_dropButton;
+    DropButton *m_dropButton;
 };

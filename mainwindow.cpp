@@ -138,11 +138,12 @@ void MainWindow::setupUi()
     // Большой + в круге
     auto *circleWidget = new QWidget(this);
     circleWidget->setFixedSize(150, 150);
-    
+
     auto *circleLayout = new QVBoxLayout(circleWidget);
     circleLayout->setContentsMargins(0, 0, 0, 0);
-    
-    m_dropButton = new QPushButton("+", this);
+
+    m_dropButton = new DropButton("+", this);
+    // DropButton автоматически передаёт события родительскому виджету
     m_dropButton->setFixedSize(120, 120);
     QFont plusFont = m_dropButton->font();
     plusFont.setPointSize(48);

@@ -2,9 +2,14 @@
 
 #include <QDialog>
 #include <QTextBrowser>
+#include <QToolBar>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QVector>
 
-class QToolBar;
 class QAction;
+class QLabel;
+class QLineEdit;
 
 /**
  * @brief Текстовый браузер с поддержкой копирования правой кнопкой мыши
@@ -18,9 +23,12 @@ public:
 
 signals:
     void rightMouseClicked();
+    void fileDropped(const QString &filePath);
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 };
 
 /**
@@ -44,11 +52,13 @@ public:
     explicit HelpDialog(QWidget *parent = nullptr);
     ~HelpDialog() override;
 
+public slots:
     void loadFile(const QString &filePath);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void toggleTheme();
@@ -64,6 +74,9 @@ private:
     void applyDarkTheme();
     void applyLightReadingMode();
     void applyDarkReadingMode();
+    void handleFileDrop(const QString &filePath);
+    void highlightAllOccurrences(const QString &text);
+    void clearSearchHighlight();
 
     CopyTextBrowser *m_textBrowser;
     QToolBar *m_toolBar;
@@ -72,4 +85,5 @@ private:
     qreal m_currentZoom;
     bool m_isDarkTheme;
     bool m_isReadingMode;
+    QVector<QTextCursor> m_searchCursors;  // Сохраняем курсоры для снятия подсветки
 };

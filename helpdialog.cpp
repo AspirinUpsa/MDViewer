@@ -1,11 +1,14 @@
 #include "helpdialog.h"
 #include <QTextBrowser>
 #include <QTextDocument>
+#include <QTextCharFormat>
+#include <QVector>
 #include <QVBoxLayout>
 #include <QToolBar>
 #include <QLineEdit>
 #include <QToolButton>
 #include <QLabel>
+#include <QTimer>
 #include <QFile>
 #include <QTextCursor>
 #include <QApplication>
@@ -13,11 +16,13 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QMimeData>
 #include <QUrl>
 #include <QScreen>
 #include <QClipboard>
 #include <QMouseEvent>
+#include <QToolTip>
 
 // Реализация CopyTextBrowser
 CopyTextBrowser::CopyTextBrowser(QWidget *parent)
@@ -33,12 +38,81 @@ void CopyTextBrowser::mousePressEvent(QMouseEvent *event)
         // Правая кнопка — копируем выделенный текст
         if (textCursor().hasSelection()) {
             copy();
+            
+            // Создаём временное уведомление
+            QLabel *notification = new QLabel("Текст скопирован в буфер обмена", this);
+            notification->setStyleSheet(
+                "QLabel {"
+                "    background-color: rgba(0, 0, 0, 200);"
+                "    color: white;"
+                "    padding: 8px 12px;"
+                "    border-radius: 4px;"
+                "    font-size: 12px;"
+                "}"
+            );
+            notification->setAttribute(Qt::WA_TransparentForMouseEvents);
+            notification->setWindowFlags(Qt::ToolTip);
+            
+            // Позиционируем рядом с курсором
+            QPoint pos = mapToGlobal(event->pos());
+            notification->move(pos.x() + 10, pos.y() - 40);
+            notification->show();
+            
+            // Автоматически скрываем через 1.5 секунды
+            QTimer::singleShot(1500, notification, [notification]() {
+                notification->deleteLater();
+            });
         }
         event->accept();
         return;
     }
     // Левая кнопка — стандартное поведение (выделение)
     QTextBrowser::mousePressEvent(event);
+}
+
+void CopyTextBrowser::dragEnterEvent(QDragEnterEvent *event)
+{
+    // Проверяем, есть ли файлы с подходящим расширением
+    if (event->mimeData()->hasUrls()) {
+        QList<QUrl> urls = event->mimeData()->urls();
+        bool hasValidFile = false;
+        for (const QUrl &url : urls) {
+            if (url.isLocalFile()) {
+                QString filePath = url.toLocalFile();
+                if (filePath.endsWith(".md", Qt::CaseInsensitive) ||
+                    filePath.endsWith(".markdown", Qt::CaseInsensitive) ||
+                    filePath.endsWith(".txt", Qt::CaseInsensitive)) {
+                    hasValidFile = true;
+                    break;
+                }
+            }
+        }
+        if (hasValidFile) {
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    // Для других случаев используем стандартное поведение
+    QTextBrowser::dragEnterEvent(event);
+}
+
+void CopyTextBrowser::dropEvent(QDropEvent *event)
+{
+    QList<QUrl> urls = event->mimeData()->urls();
+    for (const QUrl &url : urls) {
+        if (url.isLocalFile()) {
+            QString filePath = url.toLocalFile();
+            if (filePath.endsWith(".md", Qt::CaseInsensitive) ||
+                filePath.endsWith(".markdown", Qt::CaseInsensitive) ||
+                filePath.endsWith(".txt", Qt::CaseInsensitive)) {
+                emit fileDropped(filePath);
+                event->acceptProposedAction();
+                return;
+            }
+        }
+    }
+    // Если не наш файл, используем стандартное поведение
+    QTextBrowser::dropEvent(event);
 }
 
 // Реализация HelpDialog
@@ -76,29 +150,33 @@ HelpDialog::~HelpDialog()
 
 void HelpDialog::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (event->mimeData()->hasUrls()) {
-        event->acceptProposedAction();
-    }
+    // Передаём событие дочерним виджетам (CopyTextBrowser)
+    QDialog::dragEnterEvent(event);
 }
 
 void HelpDialog::dropEvent(QDropEvent *event)
 {
-    QList<QUrl> urls = event->mimeData()->urls();
-    for (const QUrl &url : urls) {
-        if (url.isLocalFile()) {
-            QString filePath = url.toLocalFile();
-            if (filePath.endsWith(".md", Qt::CaseInsensitive) ||
-                filePath.endsWith(".markdown", Qt::CaseInsensitive) ||
-                filePath.endsWith(".txt", Qt::CaseInsensitive)) {
-                loadFile(filePath);
-                show();
-                raise();
-                activateWindow();
-                break;
-            }
-        }
+    // Передаём событие дочерним виджетам (CopyTextBrowser)
+    QDialog::dropEvent(event);
+}
+
+bool HelpDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    // Не обрабатываем drag-and-drop события — пусть их обрабатывает CopyTextBrowser
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::Drop) {
+        return QDialog::eventFilter(watched, event);
     }
-    event->acceptProposedAction();
+
+    // Для всех остальных событий используем стандартную обработку
+    return QDialog::eventFilter(watched, event);
+}
+
+void HelpDialog::handleFileDrop(const QString &filePath)
+{
+    loadFile(filePath);
+    show();
+    raise();
+    activateWindow();
 }
 
 void HelpDialog::setupUi()
@@ -118,13 +196,37 @@ void HelpDialog::setupUi()
 
     auto *searchEdit = new QLineEdit(m_toolBar);
     searchEdit->setPlaceholderText("Введите текст для поиска...");
-    searchEdit->setMaximumWidth(200);
-    connect(searchEdit, &QLineEdit::textChanged, this, [this, searchEdit](const QString &text) {
+    searchEdit->setMaximumWidth(150);
+    // Поиск по нажатию Enter - подсвечивает все совпадения
+    connect(searchEdit, &QLineEdit::returnPressed, this, [this, searchEdit]() {
+        QString text = searchEdit->text();
+        
+        // Снимаем предыдущую подсветку
+        clearSearchHighlight();
+        
         if (!text.isEmpty()) {
-            m_textBrowser->find(text);
+            // Подсвечиваем все совпадения
+            highlightAllOccurrences(text);
         }
     });
     m_toolBar->addWidget(searchEdit);
+
+    // Кнопка поиска - подсвечивает все совпадения
+    auto *searchBtn = new QToolButton(m_toolBar);
+    searchBtn->setText("🔍");
+    searchBtn->setToolTip("Найти все совпадения");
+    connect(searchBtn, &QToolButton::clicked, this, [this, searchEdit]() {
+        QString text = searchEdit->text();
+        
+        // Снимаем предыдущую подсветку
+        clearSearchHighlight();
+        
+        if (!text.isEmpty()) {
+            // Подсвечиваем все совпадения
+            highlightAllOccurrences(text);
+        }
+    });
+    m_toolBar->addWidget(searchBtn);
 
     m_toolBar->addSeparator();
 
@@ -171,6 +273,8 @@ void HelpDialog::setupUi()
     m_textBrowser->setOpenLinks(true);
     m_textBrowser->setSearchPaths(QStringList() << ":/");
     m_textBrowser->setAcceptDrops(true);
+    // Подключаем к handleFileDrop для правильного отображения окна
+    connect(m_textBrowser, &CopyTextBrowser::fileDropped, this, &HelpDialog::handleFileDrop);
 
     mainLayout->addWidget(m_textBrowser);
 
@@ -179,6 +283,9 @@ void HelpDialog::setupUi()
 
 void HelpDialog::loadFile(const QString &filePath)
 {
+    // Снимаем предыдущую подсветку поиска
+    clearSearchHighlight();
+
     if (filePath.isEmpty()) {
         m_textBrowser->setHtml(
             "<h2>Справка</h2><p>Выберите <b>Файл → Открыть файл</b> для загрузки файла.</p>"
@@ -200,7 +307,7 @@ void HelpDialog::loadFile(const QString &filePath)
     // Проверяем расширение файла
     bool isMarkdown = filePath.endsWith(".md", Qt::CaseInsensitive) ||
                       filePath.endsWith(".markdown", Qt::CaseInsensitive);
-    
+
     // Используем встроенный парсер Markdown из Qt 5.14+ для MD файлов
     QTextDocument document;
     if (isMarkdown) {
@@ -235,8 +342,11 @@ void HelpDialog::loadFile(const QString &filePath)
 
 void HelpDialog::toggleTheme()
 {
-    m_isDarkTheme = !m_isDarkTheme;
+    // Снимаем подсветку перед переключением темы
+    clearSearchHighlight();
     
+    m_isDarkTheme = !m_isDarkTheme;
+
     if (m_isDarkTheme) {
         m_themeAction->setText("☀️ Светлая");
         if (m_isReadingMode) {
@@ -256,8 +366,11 @@ void HelpDialog::toggleTheme()
 
 void HelpDialog::toggleReadingMode()
 {
-    m_isReadingMode = !m_isReadingMode;
+    // Снимаем подсветку перед переключением режима
+    clearSearchHighlight();
     
+    m_isReadingMode = !m_isReadingMode;
+
     if (m_isReadingMode) {
         m_readingModeAction->setText("❌ Выход из режима чтения");
         if (m_isDarkTheme) {
@@ -281,11 +394,33 @@ void HelpDialog::applyLightTheme()
         "QTextBrowser {"
         "    background-color: #ffffff;"
         "    color: #000000;"
-        "    border: 1px solid #cccccc;"
+        "    border: none;"
         "    padding: 10px;"
         "}"
+        "QTextBrowser QScrollBar:vertical {"
+        "    background: #f0f0f0;"
+        "    width: 12px;"
+        "    border: none;"
+        "    margin: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical {"
+        "    background: #c0c0c0;"
+        "    min-height: 20px;"
+        "    border-radius: 6px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical:hover {"
+        "    background: #a0a0a0;"
+        "}"
+        "QTextBrowser QScrollBar::add-line:vertical,"
+        "QTextBrowser QScrollBar::sub-line:vertical {"
+        "    height: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::add-page:vertical,"
+        "QTextBrowser QScrollBar::sub-page:vertical {"
+        "    background: none;"
+        "}"
     );
-    
+
     m_toolBar->setStyleSheet(
         "QToolBar {"
         "    background-color: #f0f0f0;"
@@ -315,11 +450,33 @@ void HelpDialog::applyDarkTheme()
         "QTextBrowser {"
         "    background-color: #1e1e1e;"
         "    color: #d4d4d4;"
-        "    border: 1px solid #3c3c3c;"
+        "    border: none;"
         "    padding: 10px;"
         "}"
+        "QTextBrowser QScrollBar:vertical {"
+        "    background: #2d2d2d;"
+        "    width: 12px;"
+        "    border: none;"
+        "    margin: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical {"
+        "    background: #555555;"
+        "    min-height: 20px;"
+        "    border-radius: 6px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical:hover {"
+        "    background: #666666;"
+        "}"
+        "QTextBrowser QScrollBar::add-line:vertical,"
+        "QTextBrowser QScrollBar::sub-line:vertical {"
+        "    height: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::add-page:vertical,"
+        "QTextBrowser QScrollBar::sub-page:vertical {"
+        "    background: none;"
+        "}"
     );
-    
+
     m_toolBar->setStyleSheet(
         "QToolBar {"
         "    background-color: #2d2d2d;"
@@ -350,10 +507,32 @@ void HelpDialog::applyLightReadingMode()
         "QTextBrowser {"
         "    background-color: #f5f0e6;"
         "    color: #2c2c2c;"
-        "    border: 1px solid #d4c8b8;"
+        "    border: none;"
         "    padding: 15px 25px;"
         "    font-family: Georgia, 'Times New Roman', serif;"
         "    line-height: 1.6;"
+        "}"
+        "QTextBrowser QScrollBar:vertical {"
+        "    background: #e8e0d5;"
+        "    width: 12px;"
+        "    border: none;"
+        "    margin: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical {"
+        "    background: #c4b8a8;"
+        "    min-height: 20px;"
+        "    border-radius: 6px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical:hover {"
+        "    background: #b4a898;"
+        "}"
+        "QTextBrowser QScrollBar::add-line:vertical,"
+        "QTextBrowser QScrollBar::sub-line:vertical {"
+        "    height: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::add-page:vertical,"
+        "QTextBrowser QScrollBar::sub-page:vertical {"
+        "    background: none;"
         "}"
         "QTextBrowser h1, QTextBrowser h2, QTextBrowser h3 {"
         "    color: #1a1a1a;"
@@ -373,7 +552,7 @@ void HelpDialog::applyLightReadingMode()
         "    border-radius: 5px;"
         "}"
     );
-    
+
     m_toolBar->setStyleSheet(
         "QToolBar {"
         "    background-color: #e8e0d5;"
@@ -404,10 +583,32 @@ void HelpDialog::applyDarkReadingMode()
         "QTextBrowser {"
         "    background-color: #2d313a;"
         "    color: #c9d1d9;"
-        "    border: 1px solid #3c4048;"
+        "    border: none;"
         "    padding: 15px 25px;"
         "    font-family: Georgia, 'Times New Roman', serif;"
         "    line-height: 1.6;"
+        "}"
+        "QTextBrowser QScrollBar:vertical {"
+        "    background: #21262d;"
+        "    width: 12px;"
+        "    border: none;"
+        "    margin: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical {"
+        "    background: #4a5058;"
+        "    min-height: 20px;"
+        "    border-radius: 6px;"
+        "}"
+        "QTextBrowser QScrollBar::handle:vertical:hover {"
+        "    background: #5a6068;"
+        "}"
+        "QTextBrowser QScrollBar::add-line:vertical,"
+        "QTextBrowser QScrollBar::sub-line:vertical {"
+        "    height: 0px;"
+        "}"
+        "QTextBrowser QScrollBar::add-page:vertical,"
+        "QTextBrowser QScrollBar::sub-page:vertical {"
+        "    background: none;"
         "}"
         "QTextBrowser h1, QTextBrowser h2, QTextBrowser h3 {"
         "    color: #e6edf3;"
@@ -427,7 +628,7 @@ void HelpDialog::applyDarkReadingMode()
         "    border-radius: 5px;"
         "}"
     );
-    
+
     m_toolBar->setStyleSheet(
         "QToolBar {"
         "    background-color: #21262d;"
@@ -480,4 +681,68 @@ void HelpDialog::copySelectedText()
     if (m_textBrowser->textCursor().hasSelection()) {
         m_textBrowser->copy();
     }
+}
+
+void HelpDialog::highlightAllOccurrences(const QString &text)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+
+    // Формат подсветки: ярко-жёлтый фон, чёрный текст
+    QTextCharFormat highlightFormat;
+    highlightFormat.setBackground(QColor(255, 255, 0));  // Ярко-жёлтый фон
+    highlightFormat.setForeground(QColor(0, 0, 0));      // Чёрный текст
+
+    // Сохраняем позиции всех найденных совпадений
+    m_searchCursors.clear();
+    
+    QTextCursor cursor = m_textBrowser->document()->find(text, 0);
+    int position = 0;
+    
+    // Находим и подсвечиваем все вхождения
+    while (!cursor.isNull()) {
+        // Сохраняем позицию начала выделения
+        m_searchCursors.append(cursor);
+        
+        // Применяем подсветку
+        cursor.mergeCharFormat(highlightFormat);
+        
+        // Запоминаем позицию для следующего поиска
+        position = cursor.position();
+        
+        // Ищем следующее вхождение
+        cursor = m_textBrowser->document()->find(text, position);
+    }
+
+    // Прокручиваем к первому найденному совпадению без изменения форматирования
+    if (!m_searchCursors.isEmpty()) {
+        QTextCursor firstCursor = m_searchCursors.first();
+        // Просто перемещаем курсор и прокручиваем, не выделяя текст
+        QTextCursor moveCursor = m_textBrowser->textCursor();
+        moveCursor.setPosition(firstCursor.selectionStart());
+        m_textBrowser->setTextCursor(moveCursor);
+        m_textBrowser->ensureCursorVisible();
+    }
+}
+
+void HelpDialog::clearSearchHighlight()
+{
+    if (m_searchCursors.isEmpty()) {
+        return;
+    }
+
+    // Снимаем подсветку: проходим по всем сохранённым позициям
+    QTextCharFormat normalFormat;
+    normalFormat.setBackground(Qt::transparent);
+    
+    for (const QTextCursor &cursor : m_searchCursors) {
+        // Создаем новый курсор с теми же позициями
+        QTextCursor formatCursor(m_textBrowser->document());
+        formatCursor.setPosition(cursor.selectionStart());
+        formatCursor.setPosition(cursor.selectionEnd(), QTextCursor::KeepAnchor);
+        formatCursor.setCharFormat(normalFormat);
+    }
+
+    m_searchCursors.clear();
 }
